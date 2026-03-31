@@ -8,3 +8,6 @@
 # filelist
 *.list
 *.list.zst
+
+/.ace
+/docs
