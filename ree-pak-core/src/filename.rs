@@ -1,6 +1,7 @@
 use std::{collections::HashMap, path::Path, str};
 
 use nohash::BuildNoHashHasher;
+use rayon::{iter::ParallelIterator, str::ParallelString};
 
 use crate::{
     error::{PakError, Result},
@@ -34,13 +35,15 @@ impl FileNameTable {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let file_names = Self::parse_raw_file_names(bytes)?;
         let capacity = estimate_entry_capacity(file_names);
-        let mut table = Self::with_capacity(capacity);
+        let entries = {
+            file_names
+                .par_lines()
+                .filter(|line| !line.starts_with('#'))
+                .map(entry_from_str)
+                .collect_vec_list()
+        };
 
-        for line in file_names.lines().filter(|line| !line.starts_with('#')) {
-            table.push_str(line);
-        }
-
-        Ok(table)
+        Ok(Self::from_entries(capacity, entries.into_iter().flatten()))
     }
 
     /// Build a table from a list of UTF-8 path strings.
@@ -77,15 +80,30 @@ impl FileNameTable {
         }
     }
 
+    fn from_entries(capacity: usize, entries: impl IntoIterator<Item = (u64, Utf16LeString)>) -> Self {
+        let mut table = Self::with_capacity(capacity);
+
+        for (hash, file_name) in entries {
+            table.file_names.insert(hash, file_name);
+        }
+
+        table
+    }
+
     fn parse_raw_file_names(bytes: &[u8]) -> Result<&str> {
         str::from_utf8(bytes).map_err(|e| PakError::InvalidFileList(Box::new(e)))
     }
 }
 
 fn push_into_map(file_names: &mut HashMap<u64, Utf16LeString, BuildNoHashHasher<u64>>, file_name: &str) {
+    let (hash, file_name) = entry_from_str(file_name);
+    file_names.insert(hash, file_name);
+}
+
+fn entry_from_str(file_name: &str) -> (u64, Utf16LeString) {
     let file_name = encode_normalized_path(file_name);
     let hash = file_name.hash_mixed();
-    file_names.insert(hash, file_name);
+    (hash, file_name)
 }
 
 fn encode_normalized_path(file_name: &str) -> Utf16LeString {
