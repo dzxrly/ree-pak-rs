@@ -1,7 +1,6 @@
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, path::Path, str};
 
 use nohash::BuildNoHashHasher;
-use parking_lot::Mutex;
 
 use crate::{
     error::{PakError, Result},
@@ -34,36 +33,37 @@ impl FileNameTable {
     /// Parse a file list from UTF-8 text bytes.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let file_names = Self::parse_raw_file_names(bytes)?;
-        let iter = file_names.lines().filter_map(|line| {
-            if line.starts_with('#') {
-                None
-            } else {
-                Some(line.to_string())
-            }
-        });
+        let capacity = estimate_entry_capacity(file_names);
+        let mut table = Self::with_capacity(capacity);
 
-        Self::from_list(iter)
+        for line in file_names.lines().filter(|line| !line.starts_with('#')) {
+            table.push_str(line);
+        }
+
+        Ok(table)
     }
 
     /// Build a table from a list of UTF-8 path strings.
     ///
     /// Path separators are normalized (`\\` → `/`) before hashing.
-    pub fn from_list(file_names: impl IntoIterator<Item = String>) -> Result<Self> {
-        let this = Mutex::new(Self::default());
-        file_names.into_iter().for_each(|line| {
-            let file_name = Utf16LeString::new_from_str(&line.replace('\\', "/"));
-            let hash = file_name.hash_mixed();
-            this.lock().file_names.insert(hash, file_name);
-        });
+    pub fn from_list<S>(file_names: impl IntoIterator<Item = S>) -> Result<Self>
+    where
+        S: AsRef<str>,
+    {
+        let file_names = file_names.into_iter();
+        let (lower_bound, _) = file_names.size_hint();
+        let mut table = Self::with_capacity(lower_bound);
 
-        Ok(this.into_inner())
+        for line in file_names {
+            table.push_str(line.as_ref());
+        }
+
+        Ok(table)
     }
 
     /// Insert one file name into the table.
     pub fn push_str(&mut self, file_name: &str) {
-        let file_name = Utf16LeString::new_from_str(&file_name.replace('\\', "/"));
-        let hash = file_name.hash_mixed();
-        self.file_names.insert(hash, file_name);
+        push_into_map(&mut self.file_names, file_name);
     }
 
     /// Get the file name string by its mixed hash.
@@ -71,9 +71,44 @@ impl FileNameTable {
         self.file_names.get(&hash)
     }
 
-    fn parse_raw_file_names(bytes: &[u8]) -> Result<String> {
-        String::from_utf8(bytes.to_vec()).map_err(|e| PakError::InvalidFileList(Box::new(e)))
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            file_names: HashMap::with_capacity_and_hasher(capacity, BuildNoHashHasher::default()),
+        }
     }
+
+    fn parse_raw_file_names(bytes: &[u8]) -> Result<&str> {
+        str::from_utf8(bytes).map_err(|e| PakError::InvalidFileList(Box::new(e)))
+    }
+}
+
+fn push_into_map(file_names: &mut HashMap<u64, Utf16LeString, BuildNoHashHasher<u64>>, file_name: &str) {
+    let file_name = encode_normalized_path(file_name);
+    let hash = file_name.hash_mixed();
+    file_names.insert(hash, file_name);
+}
+
+fn encode_normalized_path(file_name: &str) -> Utf16LeString {
+    // Fast path for file lists that are effectively ASCII: normalize separators while
+    // widening each UTF-8 byte into one UTF-16 unit. Non-ASCII bytes are preserved as-is,
+    // which keeps this path infallible even though the decoded result may be lossy.
+    let mut utf16_units = Vec::with_capacity(file_name.len());
+
+    for &byte in file_name.as_bytes() {
+        let byte = if byte == b'\\' { b'/' } else { byte };
+        utf16_units.push(byte as u16);
+    }
+
+    Utf16LeString::from_utf16_units(utf16_units)
+}
+
+fn estimate_entry_capacity(file_names: &str) -> usize {
+    file_names
+        .as_bytes()
+        .iter()
+        .filter(|&&b| b == b'\n')
+        .count()
+        .saturating_add((!file_names.is_empty()) as usize)
 }
 
 #[cfg(test)]
@@ -102,5 +137,30 @@ mod tests {
         let err = FileNameTable::from_bytes(&[0x28, 0xB5, 0x2F, 0xFD]).unwrap_err();
 
         assert!(matches!(err, PakError::InvalidFileList(_)));
+    }
+
+    #[test]
+    fn from_list_accepts_str_slices_without_allocating_lines() {
+        let table = FileNameTable::from_list(["foo/bar.txt", "foo\\baz.bin"]).unwrap();
+
+        assert_eq!(table.file_names().count(), 2);
+        assert!(
+            table
+                .get_file_name(Utf16LeString::new_from_str("foo/bar.txt").hash_mixed())
+                .is_some()
+        );
+        assert!(
+            table
+                .get_file_name(Utf16LeString::new_from_str("foo/baz.bin").hash_mixed())
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn from_bytes_accepts_non_ascii_without_panicking() {
+        let table = FileNameTable::from_bytes("测试/目录\\文件.bin\n".as_bytes()).unwrap();
+
+        assert_eq!(table.file_names().count(), 1);
+        assert!(table.file_names().next().unwrap().1.to_string().is_ok());
     }
 }

@@ -10,6 +10,7 @@
 //! 对于包含Latin扩展字符的文件名，会产生与标准Unicode大小写转换不同的哈希值，
 //! 但这在实际游戏资产中极少出现。
 
+#[cfg(test)]
 use std::io::Read;
 
 use crate::error::PakError;
@@ -88,6 +89,7 @@ pub fn murmur3_hash<R: std::io::Read>(mut reader: R) -> std::io::Result<u32> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Utf16LeString(Vec<u16>);
 
+#[cfg(test)]
 /// UTF-16大小写转换Reader
 ///
 /// ASCII优化版本
@@ -101,6 +103,10 @@ struct Utf16CaseReader<'a> {
 impl Utf16LeString {
     pub fn new_from_str(s: &str) -> Self {
         let utf16_units: Vec<u16> = s.encode_utf16().collect();
+        Self(utf16_units)
+    }
+
+    pub(crate) fn from_utf16_units(utf16_units: Vec<u16>) -> Self {
         Self(utf16_units)
     }
 
@@ -132,13 +138,15 @@ impl Utf16LeString {
 
 impl Utf16HashExt for Utf16LeString {
     fn hash_lower_case(&self) -> u32 {
-        let mut reader = Utf16CaseReader::new_lowercase(&self.0);
-        murmur3_hash(&mut reader).unwrap()
+        hash_utf16_case(&self.0, false)
     }
 
     fn hash_upper_case(&self) -> u32 {
-        let mut reader = Utf16CaseReader::new_uppercase(&self.0);
-        murmur3_hash(&mut reader).unwrap()
+        hash_utf16_case(&self.0, true)
+    }
+
+    fn hash_mixed(&self) -> u64 {
+        hash_utf16_mixed(&self.0)
     }
 }
 
@@ -160,6 +168,7 @@ impl AsRef<[u16]> for Utf16LeString {
     }
 }
 
+#[cfg(test)]
 impl<'a> Utf16CaseReader<'a> {
     pub fn new_uppercase(data: &'a [u16]) -> Self {
         Self {
@@ -180,6 +189,7 @@ impl<'a> Utf16CaseReader<'a> {
     }
 }
 
+#[cfg(test)]
 impl<'a> Read for Utf16CaseReader<'a> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let mut bytes_read = 0;
@@ -247,6 +257,130 @@ impl<'a> Read for Utf16CaseReader<'a> {
 
         Ok(bytes_read)
     }
+}
+
+const MURMUR3_C1: u32 = 0x85eb_ca6b;
+const MURMUR3_C2: u32 = 0xc2b2_ae35;
+const MURMUR3_R1: u32 = 16;
+const MURMUR3_R2: u32 = 13;
+const MURMUR3_M: u32 = 5;
+const MURMUR3_N: u32 = 0xe654_6b64;
+const MURMUR3_BLOCK_C1: u32 = 0xcc9e_2d51;
+const MURMUR3_BLOCK_C2: u32 = 0x1b87_3593;
+const MURMUR3_BLOCK_R1: u32 = 15;
+
+#[derive(Clone, Copy)]
+struct Murmur3_32State {
+    state: u32,
+    processed: u32,
+    tail: [u8; 4],
+    tail_len: usize,
+}
+
+impl Murmur3_32State {
+    fn new() -> Self {
+        Self {
+            state: 0xFFFF_FFFF,
+            processed: 0,
+            tail: [0; 4],
+            tail_len: 0,
+        }
+    }
+
+    fn write_u16(&mut self, unit: u16) {
+        let [lo, hi] = unit.to_le_bytes();
+        self.write_byte(lo);
+        self.write_byte(hi);
+    }
+
+    fn write_byte(&mut self, byte: u8) {
+        self.tail[self.tail_len] = byte;
+        self.tail_len += 1;
+        self.processed += 1;
+
+        if self.tail_len == 4 {
+            let k = u32::from_le_bytes(self.tail);
+            self.state ^= murmur3_calc_k(k);
+            self.state = self.state.rotate_left(MURMUR3_R2);
+            self.state = self.state.wrapping_mul(MURMUR3_M).wrapping_add(MURMUR3_N);
+            self.tail_len = 0;
+        }
+    }
+
+    fn finish(mut self) -> u32 {
+        if self.tail_len != 0 {
+            let mut k = 0u32;
+            for (index, byte) in self.tail[..self.tail_len].iter().copied().enumerate() {
+                k |= (byte as u32) << (index * 8);
+            }
+            self.state ^= murmur3_calc_k(k);
+        }
+
+        murmur3_finish(self.state, self.processed)
+    }
+}
+
+#[inline]
+fn lower_ascii_utf16(unit: u16) -> u16 {
+    if unit.wrapping_sub(b'A' as u16) <= (b'Z' - b'A') as u16 {
+        unit + 32
+    } else {
+        unit
+    }
+}
+
+#[inline]
+fn upper_ascii_utf16(unit: u16) -> u16 {
+    if unit.wrapping_sub(b'a' as u16) <= (b'z' - b'a') as u16 {
+        unit - 32
+    } else {
+        unit
+    }
+}
+
+fn hash_utf16_case(data: &[u16], uppercase: bool) -> u32 {
+    let mut state = Murmur3_32State::new();
+
+    for &unit in data {
+        let converted = if uppercase {
+            upper_ascii_utf16(unit)
+        } else {
+            lower_ascii_utf16(unit)
+        };
+        state.write_u16(converted);
+    }
+
+    state.finish()
+}
+
+fn hash_utf16_mixed(data: &[u16]) -> u64 {
+    let mut upper = Murmur3_32State::new();
+    let mut lower = Murmur3_32State::new();
+
+    for &unit in data {
+        upper.write_u16(upper_ascii_utf16(unit));
+        lower.write_u16(lower_ascii_utf16(unit));
+    }
+
+    ((upper.finish() as u64) << 32) | (lower.finish() as u64)
+}
+
+#[inline]
+fn murmur3_finish(state: u32, processed: u32) -> u32 {
+    let mut hash = state ^ processed;
+    hash ^= hash.wrapping_shr(MURMUR3_R1);
+    hash = hash.wrapping_mul(MURMUR3_C1);
+    hash ^= hash.wrapping_shr(MURMUR3_R2);
+    hash = hash.wrapping_mul(MURMUR3_C2);
+    hash ^= hash.wrapping_shr(MURMUR3_R1);
+    hash
+}
+
+#[inline]
+fn murmur3_calc_k(k: u32) -> u32 {
+    k.wrapping_mul(MURMUR3_BLOCK_C1)
+        .rotate_left(MURMUR3_BLOCK_R1)
+        .wrapping_mul(MURMUR3_BLOCK_C2)
 }
 
 #[cfg(feature = "legacy-utf16-hash")]
