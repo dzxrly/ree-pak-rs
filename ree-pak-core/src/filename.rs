@@ -85,8 +85,16 @@ mod tests {
         let table = FileNameTable::from_bytes(b"foo/bar.txt\n# comment\nfoo\\baz.bin\n").unwrap();
 
         assert_eq!(table.file_names().count(), 2);
-        assert!(table.get_file_name(Utf16LeString::new_from_str("foo/bar.txt").hash_mixed()).is_some());
-        assert!(table.get_file_name(Utf16LeString::new_from_str("foo/baz.bin").hash_mixed()).is_some());
+        assert!(
+            table
+                .get_file_name(Utf16LeString::new_from_str("foo/bar.txt").hash_mixed())
+                .is_some()
+        );
+        assert!(
+            table
+                .get_file_name(Utf16LeString::new_from_str("foo/baz.bin").hash_mixed())
+                .is_some()
+        );
     }
 
     #[test]

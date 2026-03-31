@@ -37,3 +37,7 @@ legacy-utf16-hash = []
 [[bench]]
 name = "utf16_hash_bench"
 harness = false
+
+[[bench]]
+name = "filelist_bench"
+harness = false
