@@ -562,10 +562,7 @@ fn load_filename_table(project_name_or_path: &str) -> color_eyre::Result<FileNam
     }
 
     let parent_paths = [std::env::current_dir()?, std::env::current_exe()?];
-    let rel_paths = [
-        format!("assets/filelist/{}.list", project_name_or_path),
-        format!("assets/filelist/{}.list.zst", project_name_or_path),
-    ];
+    let rel_paths = [format!("assets/filelist/{}.list", project_name_or_path)];
 
     let mut path_abs = None;
     for parent_path in &parent_paths {

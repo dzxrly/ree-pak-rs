@@ -1,4 +1,4 @@
-use std::{collections::HashMap, io::Read, path::Path};
+use std::{collections::HashMap, path::Path};
 
 use nohash::BuildNoHashHasher;
 use parking_lot::Mutex;
@@ -22,7 +22,7 @@ impl FileNameTable {
 
     /// Load a file list from disk.
     ///
-    /// The list file can be plain UTF-8 text, or zstd-compressed bytes.
+    /// The list file must be plain UTF-8 text.
     pub fn from_list_file<P>(path: P) -> Result<Self>
     where
         P: AsRef<Path>,
@@ -31,7 +31,7 @@ impl FileNameTable {
         Self::from_bytes(&content)
     }
 
-    /// Parse a file list from bytes (plain text or zstd-compressed).
+    /// Parse a file list from UTF-8 text bytes.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let file_names = Self::parse_raw_file_names(bytes)?;
         let iter = file_names.lines().filter_map(|line| {
@@ -72,54 +72,27 @@ impl FileNameTable {
     }
 
     fn parse_raw_file_names(bytes: &[u8]) -> Result<String> {
-        // is zstd
-        if bytes[0..4] == [0x28, 0xB5, 0x2F, 0xFD] {
-            let mut decoder = zstd::Decoder::new(bytes)?;
-            let mut output = Vec::new();
-            decoder.read_to_end(&mut output)?;
-            String::from_utf8(output)
-        } else {
-            // plain text
-            String::from_utf8(bytes.to_vec())
-        }
-        .map_err(|e| PakError::InvalidFileList(Box::new(e)))
+        String::from_utf8(bytes.to_vec()).map_err(|e| PakError::InvalidFileList(Box::new(e)))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
-
     use super::*;
 
-    #[ignore]
     #[test]
-    fn compress_list() {
-        const DIR: &str = "../assets/filelist_raw";
-        const OUT: &str = "../assets/filelist";
+    fn from_bytes_parses_utf8_list() {
+        let table = FileNameTable::from_bytes(b"foo/bar.txt\n# comment\nfoo\\baz.bin\n").unwrap();
 
-        let out_dir = Path::new(OUT);
+        assert_eq!(table.file_names().count(), 2);
+        assert!(table.get_file_name(Utf16LeString::new_from_str("foo/bar.txt").hash_mixed()).is_some());
+        assert!(table.get_file_name(Utf16LeString::new_from_str("foo/baz.bin").hash_mixed()).is_some());
+    }
 
-        if !out_dir.exists() {
-            std::fs::create_dir_all(out_dir).unwrap();
-        }
+    #[test]
+    fn from_bytes_rejects_non_utf8_bytes() {
+        let err = FileNameTable::from_bytes(&[0x28, 0xB5, 0x2F, 0xFD]).unwrap_err();
 
-        // read dir
-        for entry in std::fs::read_dir(DIR).unwrap() {
-            let entry = entry.unwrap();
-            let path = entry.path();
-            if path.is_file() && path.extension().unwrap_or_default() == "list" {
-                eprintln!("path: {}", path.display());
-                let content = std::fs::read(&path).unwrap();
-                let mut encoder = zstd::Encoder::new(Vec::new(), 11).unwrap();
-                encoder.write_all(&content).unwrap();
-                let compressed = encoder.finish().unwrap();
-
-                let new_path = out_dir.join(path.file_name().unwrap());
-                let mut new_path = new_path.to_string_lossy().to_string();
-                new_path.push_str(".zst");
-                std::fs::write(new_path, &compressed).unwrap();
-            }
-        }
+        assert!(matches!(err, PakError::InvalidFileList(_)));
     }
 }
