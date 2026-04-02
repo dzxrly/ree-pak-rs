@@ -157,27 +157,11 @@ Tested on my PC for reference.
 
 Test file: MHRS Demo
 
-> RETool
-> 
-> Time: 249 s
-
-> [REE.Unpacker](https://github.com/Ekey/REE.PAK.Tool) 20240921
-> 
-> Time: 84 s
-
-> REE.Unpacker (No Logging) 20240921
-> 
-> Time: 76 s
-
-> MHRUnpack v1.2
-> 
-> Time: 218 s (Single Thread)
-> 
-> Time: 136 s (Multi Thread)
-> 
-> High CPU usage, but not very fast.
-> Has GUI.
-
-> [ree-pak-cli](https://github.com/eigeen/ree-pak-rs) v0.1.0
-> 
-> Time: 29 s
+| Tool | Version | Time | Notes |
+| --- | --- | --- | --- |
+| RETool | - | 249 s | - |
+| [REE.Unpacker](https://github.com/Ekey/REE.PAK.Tool) | 20240921 | 84 s | - |
+| REE.Unpacker (No Logging) | 20240921 | 76 s | - |
+| MHRUnpack | v1.2 | 218 s (Single Thread)<br>136 s (Multi Thread) | High CPU usage, but not very fast.<br>Has GUI. |
+| [ree-pak-cli](https://github.com/eigeen/ree-pak-rs) | v0.1.0 | 25 s | - |
+| [ree-pak-cli](https://github.com/eigeen/ree-pak-rs) | v0.2.10 | 20 s | - |
